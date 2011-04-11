@@ -4,10 +4,13 @@ package spdy
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"fmt"
+	"http"
 	"io"
 	"os"
+	"strings"
 )
 
 const (
@@ -57,6 +60,7 @@ const (
 )
 
 type Frame interface {
+	io.WriterTo
 	GetFlags() FrameFlags
 	GetData() []byte
 }
@@ -74,6 +78,8 @@ func (f ControlFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
 	nn, err := writeFrame(w, []interface{}{0x8001, f.Type, f.Flags}, f.Data)
 	return int64(nn), err
 }
+
+const MaxDataLength = 1<<24 - 1
 
 type DataFrame struct {
 	StreamID uint32
@@ -168,4 +174,48 @@ func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err os.Err
 		}
 	}
 	return
+}
+
+type HeaderWriter struct {
+	deflater *flate.Writer
+	buffer   *bytes.Buffer
+}
+
+const headerDictionary = `optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-languageauthorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodifiedsincemax-forwardsproxy-authorizationrangerefererteuser-agent100101200201202203204205206300301302303304305306307400401402403404405406407408409410411412413414415416417500501502503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarningwww-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturdaySundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication/xmlapplication/xhtmltext/plainpublicmax-agecharset=iso-8859-1utf-8gzipdeflateHTTP/1.1statusversionurl`
+
+func NewHeaderWriter(level int) (hw *HeaderWriter) {
+	hw = &HeaderWriter{buffer: new(bytes.Buffer)}
+	hw.deflater = flate.NewWriter(hw.buffer, level)
+	hw.deflater.Write([]byte(headerDictionary))
+	hw.deflater.Flush()
+	hw.buffer.Reset()
+	return
+}
+
+func (hw *HeaderWriter) WriteHeader(w io.Writer, h http.Header) (err os.Error) {
+	hw.write(h)
+	_, err = io.Copy(w, hw.buffer)
+	hw.buffer.Reset()
+	return
+}
+
+func (hw *HeaderWriter) Encode(h http.Header) (data []byte) {
+	hw.write(h)
+	data = make([]byte, hw.buffer.Len())
+	hw.buffer.Read(data)
+	return
+}
+
+func (hw *HeaderWriter) write(h http.Header) {
+	var count uint16
+	binary.Write(hw.deflater, binary.BigEndian, count)
+	for k, vals := range h {
+		binary.Write(hw.deflater, binary.BigEndian, uint16(len(k)))
+		binary.Write(hw.deflater, binary.BigEndian, []byte(k))
+		v := strings.Join(vals, "\x00")
+		binary.Write(hw.deflater, binary.BigEndian, uint16(len(v)))
+		binary.Write(hw.deflater, binary.BigEndian, []byte(v))
+	}
+	// XXX: We may need to do this after we've copied data.
+	hw.deflater.Flush()
 }
