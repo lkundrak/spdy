@@ -13,6 +13,14 @@ import (
 	"sync"
 )
 
+// ListenAndServe creates a new Server that serves on the given address.  If
+// the handler is nil, then http.DefaultServeMux is used.
+func ListenAndServe(addr string, handler http.Handler) os.Error {
+	srv := &Server{addr, handler}
+	return srv.ListenAndServe()
+}
+
+// A Server handles incoming SPDY connections with HTTP handlers.
 type Server struct {
 	Addr    string
 	Handler http.Handler
@@ -50,6 +58,7 @@ func (srv *Server) Serve(l net.Listener) os.Error {
 	return nil
 }
 
+// A session manages a single TCP connection to a client.
 type session struct {
 	c           net.Conn
 	handler     http.Handler
@@ -137,6 +146,8 @@ func (sess *session) receiveFrames() {
 	}
 }
 
+// A serverStream is a logical data stream inside a session.  A serverStream
+// services a single request.
 type serverStream struct {
 	id      uint32
 	session *session
