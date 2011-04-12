@@ -107,7 +107,7 @@ func ReadFrame(r io.Reader) (f Frame, err os.Error) {
 	if headBuffer.Bytes()[0]&0x80 == 0 {
 		// Data
 		df := DataFrame{}
-		err = binary.Read(headBuffer, binary.BigEndian, []interface{}{&df.StreamID, &df.Flags})
+		err = readBinary(headBuffer, &df.StreamID, &df.Flags)
 		if err != nil {
 			return
 		}
@@ -116,13 +116,24 @@ func ReadFrame(r io.Reader) (f Frame, err os.Error) {
 	} else {
 		// Control
 		cf := ControlFrame{}
-		headBuffer.ReadByte() // skip version byte
-		err = binary.Read(headBuffer, binary.BigEndian, []interface{}{&cf.Type, &cf.Flags})
+		headBuffer.ReadByte()
+		headBuffer.ReadByte() // skip version word
+		err = readBinary(headBuffer, &cf.Type, &cf.Flags)
 		if err != nil {
 			return
 		}
 		cf.Data, err = readData(r)
 		f = cf
+	}
+	return
+}
+
+func readBinary(r io.Reader, args ...interface{}) (err os.Error) {
+	for _, a := range args {
+		err = binary.Read(r, binary.BigEndian, a)
+		if err == nil {
+			return
+		}
 	}
 	return
 }
