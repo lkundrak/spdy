@@ -176,19 +176,73 @@ func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err os.Err
 	return
 }
 
+const headerDictionary = `optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-languageauthorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodifiedsincemax-forwardsproxy-authorizationrangerefererteuser-agent100101200201202203204205206300301302303304305306307400401402403404405406407408409410411412413414415416417500501502503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarningwww-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturdaySundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication/xmlapplication/xhtmltext/plainpublicmax-agecharset=iso-8859-1utf-8gzipdeflateHTTP/1.1statusversionurl`
+
+type HeaderReader struct {
+	inflater io.Reader
+	buffer   *bytes.Buffer
+}
+
+func NewHeaderReader() (hr *HeaderReader) {
+	hr = &HeaderReader{buffer: new(bytes.Buffer)}
+	hr.inflater = flate.NewReader(hr.buffer)
+	// TODO: dictionary
+	return
+}
+
+func (hr *HeaderReader) Decode(data []byte) (h http.Header, err os.Error) {
+	hr.buffer.Write(data)
+	h, err = hr.read()
+	hr.buffer.Reset()
+	return
+}
+
+func (hr *HeaderReader) read() (h http.Header, err os.Error) {
+	var count uint16
+	err = binary.Read(hr.inflater, binary.BigEndian, &count)
+	if err != nil {
+		return
+	}
+	h = make(http.Header, int(count))
+	for i := 0; i < int(count); i++ {
+		var name, value string
+		name, err = readHeaderString(hr.inflater)
+		if err != nil {
+			return
+		}
+		value, err = readHeaderString(hr.inflater)
+		if err != nil {
+			return
+		}
+		valueList := strings.Split(string(value), "\x00", -1)
+		h[name] = valueList
+	}
+	return
+}
+
+func readHeaderString(r io.Reader) (s string, err os.Error) {
+	var length uint16
+	err = binary.Read(r, binary.BigEndian, &length)
+	if err != nil {
+		return
+	}
+	data := make([]byte, int(length))
+	_, err = io.ReadFull(r, data)
+	if err != nil {
+		return
+	}
+	return string(data), nil
+}
+
 type HeaderWriter struct {
 	deflater *flate.Writer
 	buffer   *bytes.Buffer
 }
 
-const headerDictionary = `optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-languageauthorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodifiedsincemax-forwardsproxy-authorizationrangerefererteuser-agent100101200201202203204205206300301302303304305306307400401402403404405406407408409410411412413414415416417500501502503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarningwww-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturdaySundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication/xmlapplication/xhtmltext/plainpublicmax-agecharset=iso-8859-1utf-8gzipdeflateHTTP/1.1statusversionurl`
-
 func NewHeaderWriter(level int) (hw *HeaderWriter) {
 	hw = &HeaderWriter{buffer: new(bytes.Buffer)}
 	hw.deflater = flate.NewWriter(hw.buffer, level)
-	hw.deflater.Write([]byte(headerDictionary))
-	hw.deflater.Flush()
-	hw.buffer.Reset()
+	// TODO: dictionary
 	return
 }
 
