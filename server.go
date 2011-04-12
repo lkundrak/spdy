@@ -181,9 +181,9 @@ func (st *stream) WriteHeader(code int) {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, st.id&0x7fffffff)
 	buf.Write([16]byte{}[:])
-	st.header.Set("status", strconv.Itoa(code)+" "+http.StatusText(code))
-	st.header.Set("version", "HTTP/1.1")
-	st.headerWriter.WriteHeader(buf, st.header)
+	st.responseHeaders.Set("status", strconv.Itoa(code)+" "+http.StatusText(code))
+	st.responseHeaders.Set("version", "HTTP/1.1")
+	st.headerWriter.WriteHeader(buf, st.responseHeaders)
 	st.writeFrame(ControlFrame{
 		Type: TypeSynReply,
 		Data: buf.Bytes(),
