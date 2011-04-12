@@ -75,7 +75,7 @@ func (f ControlFrame) GetFlags() FrameFlags { return f.Flags }
 func (f ControlFrame) GetData() []byte      { return f.Data }
 
 func (f ControlFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
-	nn, err := writeFrame(w, []interface{}{0x8001, f.Type, f.Flags}, f.Data)
+	nn, err := writeFrame(w, []interface{}{0x8002, f.Type, f.Flags}, f.Data)
 	return int64(nn), err
 }
 
