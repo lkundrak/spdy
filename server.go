@@ -126,6 +126,20 @@ func (sess *session) handleControl(frame ControlFrame) {
 		log.Println("  Reset")
 		log.Println("    ID:", streamId)
 		log.Println("    Code:", statusCode)
+	case TypePing:
+		d := bytes.NewBuffer(frame.Data)
+		var pingId uint32
+		readBinary(d, &pingId)
+		log.Println("  Ping")
+		sess.out <- ControlFrame{
+			Type: TypePing,
+			Data: []byte{
+				byte(pingId & 0xff000000 >> 24),
+				byte(pingId & 0x00ff0000 >> 16),
+				byte(pingId & 0x0000ff00 >> 8),
+				byte(pingId & 0x000000ff >> 0),
+			},
+		}
 	}
 }
 
