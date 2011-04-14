@@ -294,7 +294,6 @@ type HeaderWriter struct {
 
 func NewHeaderWriter(level int) (hw *HeaderWriter) {
 	hw = &HeaderWriter{buffer: new(bytes.Buffer)}
-	// TODO: dictionary
 	hw.compressor, _ = zlib.NewWriterDict(hw.buffer, level, []byte(headerDictionary))
 	return
 }
@@ -323,7 +322,5 @@ func (hw *HeaderWriter) write(h http.Header) {
 		binary.Write(hw.compressor, binary.BigEndian, uint16(len(v)))
 		binary.Write(hw.compressor, binary.BigEndian, []byte(v))
 	}
-	// XXX: We may need to do this *after* we've copied data.
 	hw.compressor.Flush()
-	//hw.compressor.Close()
 }
