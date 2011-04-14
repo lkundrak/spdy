@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -112,7 +111,6 @@ func (sess *session) handleControl(frame ControlFrame) {
 		if stream, err := newServerStream(sess, frame); err == nil {
 			if _, exists := sess.streams[stream.id]; !exists {
 				sess.streams[stream.id] = stream
-				go stream.bufferReads()
 				go func() {
 					sess.handler.ServeHTTP(stream, stream.Request())
 					stream.finish()
@@ -140,10 +138,10 @@ func (sess *session) handleData(frame DataFrame) {
 		// TODO: Error?
 		return
 	}
-	if st.readChan != nil {
-		st.readChan <- frame
+	if st.dataPipe != nil {
+		st.dataPipe.write(frame.Data)
 		if frame.Flags&FlagFin != 0 {
-			close(st.readChan)
+			st.dataPipe.wclose(nil)
 		}
 	}
 }
@@ -189,9 +187,7 @@ type serverStream struct {
 	responseHeaders http.Header
 	wroteHeader     bool
 
-	readChan   chan DataFrame
-	readBuffer *bytes.Buffer
-	readLock   sync.Mutex
+	dataPipe *asyncPipe
 }
 
 func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err os.Error) {
@@ -205,8 +201,7 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err o
 	}
 	if frame.Flags&FlagFin == 0 {
 		// Request body will follow
-		st.readChan = make(chan DataFrame)
-		st.readBuffer = new(bytes.Buffer)
+		st.dataPipe = apipe()
 	}
 	// Read frame data
 	data := bytes.NewBuffer(frame.Data)
@@ -231,18 +226,6 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err o
 	return
 }
 
-func (st *serverStream) bufferReads() {
-	if st.readChan == nil {
-		return
-	}
-	for frame := range st.readChan {
-		st.readLock.Lock()
-		st.readBuffer.Write(frame.Data)
-		st.readLock.Unlock()
-	}
-	st.readChan = nil
-}
-
 // Request returns the request data associated with the serverStream.
 func (st *serverStream) Request() (req *http.Request) {
 	// TODO
@@ -259,15 +242,7 @@ func (st *serverStream) Request() (req *http.Request) {
 }
 
 func (st *serverStream) Read(p []byte) (n int, err os.Error) {
-	st.readLock.Lock()
-	defer st.readLock.Unlock()
-	if st.readBuffer.Len() == 0 {
-		if st.readChan == nil {
-			return 0, os.EOF
-		}
-		// TODO: Block for more data
-	}
-	return st.readBuffer.Read(p)
+	return st.dataPipe.read(p)
 }
 
 // Header returns the current response headers.
