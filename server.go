@@ -7,10 +7,12 @@ import (
 	"encoding/binary"
 	"http"
 	"io"
+	"log"
 	"net"
 	"os"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // ListenAndServe creates a new Server that serves on the given address.  If
@@ -60,20 +62,24 @@ func (srv *Server) Serve(l net.Listener) os.Error {
 
 // A session manages a single TCP connection to a client.
 type session struct {
-	c           net.Conn
-	handler     http.Handler
-	in, out     chan Frame
-	streams     map[uint32]*serverStream
-	streamsLock sync.RWMutex
+	c       net.Conn
+	handler http.Handler
+	in, out chan Frame
+	streams map[uint32]*serverStream // all access is done synchronously
+
+	headerReader *HeaderReader
+	headerWriter *HeaderWriter
 }
 
 func newSession(c net.Conn, h http.Handler) (s *session, err os.Error) {
 	s = &session{
-		c:       c,
-		handler: h,
-		in:      make(chan Frame),
-		out:     make(chan Frame),
-		streams: make(map[uint32]*serverStream),
+		c:            c,
+		handler:      h,
+		headerReader: NewHeaderReader(),
+		headerWriter: NewHeaderWriter(-1),
+		in:           make(chan Frame),
+		out:          make(chan Frame),
+		streams:      make(map[uint32]*serverStream),
 	}
 	return
 }
@@ -97,23 +103,37 @@ func (sess *session) serve() {
 }
 
 func (sess *session) handleControl(frame ControlFrame) {
+	log.Printf("CONTROL <-\n")
+	log.Printf("  Type:  %v\n", frame.Type)
+	log.Printf("  Flags: %#04x\n", frame.Flags)
+
 	switch frame.Type {
 	case TypeSynStream:
-		sess.streamsLock.Lock()
-		defer sess.streamsLock.Unlock()
 		if stream, err := newServerStream(sess, frame); err == nil {
 			if _, exists := sess.streams[stream.id]; !exists {
 				sess.streams[stream.id] = stream
 				go stream.bufferReads()
-				go sess.handler.ServeHTTP(stream, stream.Request())
+				go func() {
+					sess.handler.ServeHTTP(stream, stream.Request())
+					stream.finish()
+				}()
 			}
+		} else {
+			log.Println("Stream error:", err)
 		}
+	case TypeRstStream:
+		d := bytes.NewBuffer(frame.Data)
+		var streamId, statusCode uint32
+		readBinary(d, &streamId, &statusCode)
+		log.Println("  Reset")
+		log.Println("    ID:", streamId)
+		log.Println("    Code:", statusCode)
 	}
 }
 
 func (sess *session) handleData(frame DataFrame) {
-	sess.streamsLock.RLock()
-	defer sess.streamsLock.RUnlock()
+	log.Printf("DATA <-\n")
+	log.Printf("  Flags: %#04x\n", frame.Flags)
 
 	st, found := sess.streams[frame.StreamID]
 	if !found {
@@ -131,7 +151,19 @@ func (sess *session) handleData(frame DataFrame) {
 func (sess *session) sendFrames() {
 	for frame := range sess.out {
 		// TODO: Check for errors
-		frame.WriteTo(sess.c)
+		switch f := frame.(type) {
+		case DataFrame:
+			log.Println("DATA ->")
+			log.Printf("  Flags: %#04x", f.Flags)
+		case ControlFrame:
+			log.Println("CONTROL ->")
+			log.Printf("  Type:  %v", f.Type)
+			log.Printf("  Flags: %#04x\n", f.Flags)
+		}
+		_, err := frame.WriteTo(sess.c)
+		if err != nil {
+			log.Println("Error", err)
+		}
 	}
 }
 
@@ -153,18 +185,14 @@ type serverStream struct {
 	session *session
 	closed  bool
 
-	headerReader   *HeaderReader
-	requestHeaders http.Header
-
-	headerWriter    *HeaderWriter
+	requestHeaders  http.Header
 	responseHeaders http.Header
 	wroteHeader     bool
 
 	readChan   chan DataFrame
 	readBuffer *bytes.Buffer
 	readLock   sync.Mutex
-
-	lastWrite Frame
+	lastWrite  Frame
 }
 
 func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err os.Error) {
@@ -174,8 +202,6 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err o
 	}
 	st = &serverStream{
 		session:         sess,
-		headerReader:    NewHeaderReader(),
-		headerWriter:    NewHeaderWriter(-1),
 		responseHeaders: make(http.Header),
 	}
 	if frame.Flags&FlagFin == 0 {
@@ -193,11 +219,23 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err o
 	if err != nil {
 		return
 	}
-	st.requestHeaders, err = st.headerReader.Decode(data.Bytes())
+	st.requestHeaders, err = sess.headerReader.Decode(data.Bytes())
+	if err == nil {
+		log.Println("HEADERS")
+		for name, values := range st.requestHeaders {
+			log.Printf("  %s:\n", name)
+			for _, v := range values {
+				log.Println("    " + v)
+			}
+		}
+	}
 	return
 }
 
 func (st *serverStream) bufferReads() {
+	if st.readChan == nil {
+		return
+	}
 	for frame := range st.readChan {
 		st.readLock.Lock()
 		st.readBuffer.Write(frame.Data)
@@ -217,6 +255,7 @@ func (st *serverStream) Request() (req *http.Request) {
 		Body:       st,
 		RemoteAddr: st.session.c.RemoteAddr().String(),
 	}
+	req.URL, _ = http.ParseRequestURL(req.RawURL)
 	return
 }
 
@@ -247,32 +286,65 @@ func (st *serverStream) Write(p []byte) (n int, err os.Error) {
 		frame := DataFrame{
 			StreamID: st.id,
 		}
-		if len(p) <= MaxDataLength {
-			frame.Data = p
-			p = p[:0]
+		if len(p) < MaxDataLength {
+			frame.Data = make([]byte, len(p))
 		} else {
-			frame.Data = p[:MaxDataLength]
-			p = p[MaxDataLength:]
+			frame.Data = make([]byte, MaxDataLength)
 		}
+		copy(frame.Data, p)
+		p = p[len(frame.Data):]
 		st.writeFrame(frame)
 	}
 	return
+}
+
+type synReplyFrame struct {
+	stream *serverStream
+	header http.Header
+	flags  FrameFlags
+}
+
+func (frame synReplyFrame) GetFlags() FrameFlags {
+	return frame.flags
+}
+
+func (frame synReplyFrame) GetData() []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, frame.stream.id&0x7fffffff)
+	buf.Write([2]byte{}[:])
+	frame.stream.session.headerWriter.WriteHeader(buf, frame.stream.responseHeaders)
+	return buf.Bytes()
+}
+
+func (frame synReplyFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
+	cf := ControlFrame{Type: TypeSynReply, Data: frame.GetData()}
+	return cf.WriteTo(w)
 }
 
 func (st *serverStream) WriteHeader(code int) {
 	if st.wroteHeader {
 		return
 	}
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, st.id&0x7fffffff)
-	buf.Write([16]byte{}[:])
 	st.responseHeaders.Set("status", strconv.Itoa(code)+" "+http.StatusText(code))
 	st.responseHeaders.Set("version", "HTTP/1.1")
-	st.headerWriter.WriteHeader(buf, st.responseHeaders)
-	st.writeFrame(ControlFrame{
-		Type: TypeSynReply,
-		Data: buf.Bytes(),
-	})
+	if st.responseHeaders.Get("Content-Type") == "" {
+		st.responseHeaders.Set("Content-Type", "text/html; charset=utf-8")
+	}
+	if st.responseHeaders.Get("Date") == "" {
+		st.responseHeaders.Set("Date", time.UTC().Format(http.TimeFormat))
+	}
+	// Write the frame
+	// TODO: Copy headers
+	st.writeFrame(synReplyFrame{stream: st, header: st.responseHeaders})
+	st.wroteHeader = true
+	// Display response headers
+	log.Println("RESPONSE HEADERS")
+	for name, values := range st.responseHeaders {
+		log.Printf("  %s:\n", name)
+		for _, v := range values {
+			log.Println("    " + v)
+		}
+	}
 }
 
 func (st *serverStream) writeFrame(frame Frame) {
@@ -291,10 +363,16 @@ func (st *serverStream) Flush() os.Error {
 }
 
 func (st *serverStream) Close() (err os.Error) {
+	if st.closed {
+		return
+	}
 	if st.lastWrite != nil {
 		switch frame := st.lastWrite.(type) {
 		case DataFrame:
 			frame.Flags |= FlagFin
+			st.session.out <- frame
+		case synReplyFrame:
+			frame.flags |= FlagFin
 			st.session.out <- frame
 		case ControlFrame:
 			if frame.Type == TypeSynStream || frame.Type == TypeSynReply {
@@ -328,4 +406,11 @@ func (st *serverStream) Close() (err os.Error) {
 	}
 	st.closed = true
 	return nil
+}
+
+func (st *serverStream) finish() (err os.Error) {
+	if !st.wroteHeader {
+		st.WriteHeader(http.StatusOK)
+	}
+	return st.Close()
 }

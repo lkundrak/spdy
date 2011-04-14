@@ -4,13 +4,14 @@ package spdy
 
 import (
 	"bytes"
-	"compress/flate"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
 	"http"
 	"io"
 	"os"
 	"strings"
+	"sync"
 )
 
 const (
@@ -75,7 +76,7 @@ func (f ControlFrame) GetFlags() FrameFlags { return f.Flags }
 func (f ControlFrame) GetData() []byte      { return f.Data }
 
 func (f ControlFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
-	nn, err := writeFrame(w, []interface{}{0x8002, f.Type, f.Flags}, f.Data)
+	nn, err := writeFrame(w, []interface{}{uint16(0x8002), f.Type, f.Flags}, f.Data)
 	return int64(nn), err
 }
 
@@ -131,7 +132,7 @@ func ReadFrame(r io.Reader) (f Frame, err os.Error) {
 func readBinary(r io.Reader, args ...interface{}) (err os.Error) {
 	for _, a := range args {
 		err = binary.Read(r, binary.BigEndian, a)
-		if err == nil {
+		if err != nil {
 			return
 		}
 	}
@@ -161,7 +162,7 @@ func readData(r io.Reader) (data []byte, err os.Error) {
 func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err os.Error) {
 	var nn int
 	// Header (40 bits)
-	err = binary.Write(w, binary.BigEndian, head)
+	err = writeBinary(w, head...)
 	if err != nil {
 		return
 	}
@@ -173,60 +174,101 @@ func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err os.Err
 		byte(length & 0x0000ff00 >> 8),
 		byte(length & 0x000000ff),
 	})
+	n += nn
 	if err != nil {
 		return
 	}
-	n += nn
 	// Data
 	if length > 0 {
 		nn, err = w.Write(data)
-		if err == nil {
-			n += nn
+		n += nn
+	}
+	return
+}
+
+func writeBinary(r io.Writer, args ...interface{}) (err os.Error) {
+	for _, a := range args {
+		err = binary.Write(r, binary.BigEndian, a)
+		if err != nil {
+			return
 		}
 	}
 	return
 }
 
-const headerDictionary = `optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-languageauthorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodifiedsincemax-forwardsproxy-authorizationrangerefererteuser-agent100101200201202203204205206300301302303304305306307400401402403404405406407408409410411412413414415416417500501502503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarningwww-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturdaySundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication/xmlapplication/xhtmltext/plainpublicmax-agecharset=iso-8859-1utf-8gzipdeflateHTTP/1.1statusversionurl`
+const headerDictionary = `optionsgetheadpostputdeletetraceacceptaccept-charsetaccept-encodingaccept-languageauthorizationexpectfromhostif-modified-sinceif-matchif-none-matchif-rangeif-unmodifiedsincemax-forwardsproxy-authorizationrangerefererteuser-agent100101200201202203204205206300301302303304305306307400401402403404405406407408409410411412413414415416417500501502503504505accept-rangesageetaglocationproxy-authenticatepublicretry-afterservervarywarningwww-authenticateallowcontent-basecontent-encodingcache-controlconnectiondatetrailertransfer-encodingupgradeviawarningcontent-languagecontent-lengthcontent-locationcontent-md5content-rangecontent-typeetagexpireslast-modifiedset-cookieMondayTuesdayWednesdayThursdayFridaySaturdaySundayJanFebMarAprMayJunJulAugSepOctNovDecchunkedtext/htmlimage/pngimage/jpgimage/gifapplication/xmlapplication/xhtmltext/plainpublicmax-agecharset=iso-8859-1utf-8gzipdeflateHTTP/1.1statusversionurl` + "\x00"
+
+type hrSource struct {
+	r io.Reader
+	m sync.RWMutex
+	c *sync.Cond
+}
+
+func (src *hrSource) Read(p []byte) (n int, err os.Error) {
+	src.m.RLock()
+	for src.r == nil {
+		src.c.Wait()
+	}
+	n, err = src.r.Read(p)
+	src.m.RUnlock()
+	if err == os.EOF {
+		src.change(nil)
+		err = nil
+	}
+	return
+}
+
+func (src *hrSource) change(r io.Reader) {
+	src.m.Lock()
+	defer src.m.Unlock()
+	src.r = r
+	src.c.Broadcast()
+}
 
 type HeaderReader struct {
-	inflater io.Reader
-	buffer   *bytes.Buffer
+	source       hrSource
+	decompressor io.ReadCloser
 }
 
 func NewHeaderReader() (hr *HeaderReader) {
-	hr = &HeaderReader{buffer: new(bytes.Buffer)}
-	hr.inflater = flate.NewReader(hr.buffer)
-	// TODO: dictionary
+	hr = new(HeaderReader)
+	hr.source.c = sync.NewCond(hr.source.m.RLocker())
 	return
 }
 
 func (hr *HeaderReader) Decode(data []byte) (h http.Header, err os.Error) {
-	hr.buffer.Write(data)
+	hr.source.change(bytes.NewBuffer(data))
 	h, err = hr.read()
-	hr.buffer.Reset()
 	return
 }
 
 func (hr *HeaderReader) read() (h http.Header, err os.Error) {
 	var count uint16
-	err = binary.Read(hr.inflater, binary.BigEndian, &count)
+	if hr.decompressor == nil {
+		hr.decompressor, _ = zlib.NewReaderDict(&hr.source, []byte(headerDictionary))
+		if err != nil {
+			return
+		}
+	}
+	err = binary.Read(hr.decompressor, binary.BigEndian, &count)
 	if err != nil {
 		return
 	}
 	h = make(http.Header, int(count))
 	for i := 0; i < int(count); i++ {
 		var name, value string
-		name, err = readHeaderString(hr.inflater)
+		name, err = readHeaderString(hr.decompressor)
 		if err != nil {
 			return
 		}
-		value, err = readHeaderString(hr.inflater)
+		value, err = readHeaderString(hr.decompressor)
 		if err != nil {
 			return
 		}
 		valueList := strings.Split(string(value), "\x00", -1)
-		h[name] = valueList
+		for _, v := range valueList {
+			h.Add(name, v)
+		}
 	}
 	return
 }
@@ -246,14 +288,14 @@ func readHeaderString(r io.Reader) (s string, err os.Error) {
 }
 
 type HeaderWriter struct {
-	deflater *flate.Writer
-	buffer   *bytes.Buffer
+	compressor *zlib.Writer
+	buffer     *bytes.Buffer
 }
 
 func NewHeaderWriter(level int) (hw *HeaderWriter) {
 	hw = &HeaderWriter{buffer: new(bytes.Buffer)}
-	hw.deflater = flate.NewWriter(hw.buffer, level)
 	// TODO: dictionary
+	hw.compressor, _ = zlib.NewWriterDict(hw.buffer, level, []byte(headerDictionary))
 	return
 }
 
@@ -272,15 +314,16 @@ func (hw *HeaderWriter) Encode(h http.Header) (data []byte) {
 }
 
 func (hw *HeaderWriter) write(h http.Header) {
-	var count uint16
-	binary.Write(hw.deflater, binary.BigEndian, count)
+	binary.Write(hw.compressor, binary.BigEndian, uint16(len(h)))
 	for k, vals := range h {
-		binary.Write(hw.deflater, binary.BigEndian, uint16(len(k)))
-		binary.Write(hw.deflater, binary.BigEndian, []byte(k))
+		k = strings.ToLower(k)
+		binary.Write(hw.compressor, binary.BigEndian, uint16(len(k)))
+		binary.Write(hw.compressor, binary.BigEndian, []byte(k))
 		v := strings.Join(vals, "\x00")
-		binary.Write(hw.deflater, binary.BigEndian, uint16(len(v)))
-		binary.Write(hw.deflater, binary.BigEndian, []byte(v))
+		binary.Write(hw.compressor, binary.BigEndian, uint16(len(v)))
+		binary.Write(hw.compressor, binary.BigEndian, []byte(v))
 	}
-	// XXX: We may need to do this after we've copied data.
-	hw.deflater.Flush()
+	// XXX: We may need to do this *after* we've copied data.
+	hw.compressor.Flush()
+	//hw.compressor.Close()
 }
