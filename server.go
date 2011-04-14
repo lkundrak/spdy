@@ -192,7 +192,6 @@ type serverStream struct {
 	readChan   chan DataFrame
 	readBuffer *bytes.Buffer
 	readLock   sync.Mutex
-	lastWrite  Frame
 }
 
 func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err os.Error) {
@@ -293,7 +292,8 @@ func (st *serverStream) Write(p []byte) (n int, err os.Error) {
 		}
 		copy(frame.Data, p)
 		p = p[len(frame.Data):]
-		st.writeFrame(frame)
+		st.session.out <- frame
+		n += len(frame.Data)
 	}
 	return
 }
@@ -335,7 +335,7 @@ func (st *serverStream) WriteHeader(code int) {
 	}
 	// Write the frame
 	// TODO: Copy headers
-	st.writeFrame(synReplyFrame{stream: st, header: st.responseHeaders})
+	st.session.out <- synReplyFrame{stream: st, header: st.responseHeaders}
 	st.wroteHeader = true
 	// Display response headers
 	log.Println("RESPONSE HEADERS")
@@ -347,62 +347,14 @@ func (st *serverStream) WriteHeader(code int) {
 	}
 }
 
-func (st *serverStream) writeFrame(frame Frame) {
-	if st.lastWrite != nil {
-		st.session.out <- st.lastWrite
-	}
-	st.lastWrite = frame
-}
-
-func (st *serverStream) Flush() os.Error {
-	if st.lastWrite != nil {
-		st.session.out <- st.lastWrite
-		st.lastWrite = nil
-	}
-	return nil
-}
-
 func (st *serverStream) Close() (err os.Error) {
 	if st.closed {
 		return
 	}
-	if st.lastWrite != nil {
-		switch frame := st.lastWrite.(type) {
-		case DataFrame:
-			frame.Flags |= FlagFin
-			st.session.out <- frame
-		case synReplyFrame:
-			frame.flags |= FlagFin
-			st.session.out <- frame
-		case ControlFrame:
-			if frame.Type == TypeSynStream || frame.Type == TypeSynReply {
-				frame.Flags |= FlagFin
-				st.session.out <- frame
-			} else {
-				st.session.out <- st.lastWrite
-				st.session.out <- DataFrame{
-					StreamID: st.id,
-					Flags:    FlagFin,
-					Data:     []byte{},
-				}
-			}
-		default:
-			// Any other frame must be sent first, then followed by a close.
-			st.session.out <- st.lastWrite
-			st.session.out <- DataFrame{
-				StreamID: st.id,
-				Flags:    FlagFin,
-				Data:     []byte{},
-			}
-		}
-		st.lastWrite = nil
-	} else {
-		// Already flushed
-		st.session.out <- DataFrame{
-			StreamID: st.id,
-			Flags:    FlagFin,
-			Data:     []byte{},
-		}
+	st.session.out <- DataFrame{
+		StreamID: st.id,
+		Flags:    FlagFin,
+		Data:     []byte{},
 	}
 	st.closed = true
 	return nil
