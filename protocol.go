@@ -236,6 +236,12 @@ func NewHeaderReader() (hr *HeaderReader) {
 	return
 }
 
+func (hr *HeaderReader) ReadHeader(r io.Reader) (h http.Header, err os.Error) {
+	hr.source.change(r)
+	h, err = hr.read()
+	return
+}
+
 func (hr *HeaderReader) Decode(data []byte) (h http.Header, err os.Error) {
 	hr.source.change(bytes.NewBuffer(data))
 	h, err = hr.read()
