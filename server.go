@@ -4,6 +4,8 @@ package spdy
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"http"
 	"io"
@@ -19,6 +21,27 @@ import (
 func ListenAndServe(addr string, handler http.Handler) os.Error {
 	srv := &Server{addr, handler}
 	return srv.ListenAndServe()
+}
+
+// ListenAndServeTLS acts like ListenAndServe except it uses TLS.
+func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handler) (err os.Error) {
+	config := &tls.Config{
+		Rand:         rand.Reader,
+		Time:         time.Seconds,
+		NextProtos:   []string{"http/1.1"},
+		Certificates: make([]tls.Certificate, 1),
+	}
+	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return
+	}
+
+	conn, err := net.Listen("tcp", addr)
+	if err != nil {
+		return
+	}
+	tlsListener := tls.NewListener(conn, config)
+	return (&Server{addr, handler}).Serve(tlsListener)
 }
 
 // A Server handles incoming SPDY connections with HTTP handlers.
