@@ -8,6 +8,8 @@ import (
 	"sync"
 )
 
+// An asyncPipe is similar to *io.Pipe, but writes never block: they are sent to a buffer, where a reader will block until it has some data in the buffer.
+// The write side can close with an error, but the read side cannot.
 type asyncPipe struct {
 	rl      sync.Mutex   // gates readers one at a time
 	wl      sync.Mutex   // gates writers one at a time

@@ -14,6 +14,9 @@ import (
 	"sync"
 )
 
+type ControlFrameType uint16
+
+// Control frame type constants
 const (
 	TypeSynStream    = 0x0001
 	TypeSynReply     = 0x0002
@@ -25,8 +28,6 @@ const (
 	TypeHeaders      = 0x0008
 	TypeWindowUpdate = 0x0009
 )
-
-type ControlFrameType uint16
 
 func (t ControlFrameType) String() string {
 	switch t {
@@ -54,18 +55,21 @@ func (t ControlFrameType) String() string {
 
 type FrameFlags uint8
 
+// Frame flag constants
 const (
 	FlagFin                              = 0x01
 	FlagUnidirectional                   = 0x02
 	FlagClearPreviouslyPersistedSettings = 0x01
 )
 
+// A Frame is the low-level construct passed over a SPDY connection.
 type Frame interface {
-	io.WriterTo
+	io.WriterTo // WriteTo method writes the packet in SPDY format.
 	GetFlags() FrameFlags
 	GetData() []byte
 }
 
+// ControlFrame holds a generic control frame.
 type ControlFrame struct {
 	Type  ControlFrameType
 	Flags FrameFlags
@@ -80,8 +84,10 @@ func (f ControlFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
 	return int64(nn), err
 }
 
+// MaxDataLength is the maximum number of bytes that can be stored in one frame.
 const MaxDataLength = 1<<24 - 1
 
+// A DataFrame stores a data frame and its associated metadata.
 type DataFrame struct {
 	StreamID uint32
 	Flags    FrameFlags
@@ -225,23 +231,27 @@ func (src *hrSource) change(r io.Reader) {
 	src.c.Broadcast()
 }
 
+// A HeaderReader reads zlib-compressed headers from discontiguous sources.
 type HeaderReader struct {
 	source       hrSource
 	decompressor io.ReadCloser
 }
 
+// NewHeaderReader creates a HeaderReader with the initial dictionary.
 func NewHeaderReader() (hr *HeaderReader) {
 	hr = new(HeaderReader)
 	hr.source.c = sync.NewCond(hr.source.m.RLocker())
 	return
 }
 
+// ReadHeader reads a set of headers from a reader.
 func (hr *HeaderReader) ReadHeader(r io.Reader) (h http.Header, err os.Error) {
 	hr.source.change(r)
 	h, err = hr.read()
 	return
 }
 
+// Decode reads a set of headers from a block of bytes.
 func (hr *HeaderReader) Decode(data []byte) (h http.Header, err os.Error) {
 	hr.source.change(bytes.NewBuffer(data))
 	h, err = hr.read()
@@ -293,17 +303,20 @@ func readHeaderString(r io.Reader) (s string, err os.Error) {
 	return string(data), nil
 }
 
+// HeaderWriter will write zlib-compressed headers on different streams.
 type HeaderWriter struct {
 	compressor *zlib.Writer
 	buffer     *bytes.Buffer
 }
 
+// NewHeaderWriter creates a HeaderWriter ready to compress headers.
 func NewHeaderWriter(level int) (hw *HeaderWriter) {
 	hw = &HeaderWriter{buffer: new(bytes.Buffer)}
 	hw.compressor, _ = zlib.NewWriterDict(hw.buffer, level, []byte(headerDictionary))
 	return
 }
 
+// WriteHeader writes a header block directly to an output.
 func (hw *HeaderWriter) WriteHeader(w io.Writer, h http.Header) (err os.Error) {
 	hw.write(h)
 	_, err = io.Copy(w, hw.buffer)
@@ -311,6 +324,7 @@ func (hw *HeaderWriter) WriteHeader(w io.Writer, h http.Header) (err os.Error) {
 	return
 }
 
+// Encode returns a compressed header block.
 func (hw *HeaderWriter) Encode(h http.Header) (data []byte) {
 	hw.write(h)
 	data = make([]byte, hw.buffer.Len())

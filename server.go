@@ -50,6 +50,8 @@ type Server struct {
 	Handler http.Handler
 }
 
+// ListenAndServe services SPDY requests on the given address.
+// If the handler is nil, then http.DefaultServeMux is used.
 func (srv *Server) ListenAndServe() os.Error {
 	addr := srv.Addr
 	if addr == "" {
@@ -62,6 +64,8 @@ func (srv *Server) ListenAndServe() os.Error {
 	return srv.Serve(l)
 }
 
+// ListenAndServe services SPDY requests using the given listener.
+// If the handler is nil, then http.DefaultServeMux is used.
 func (srv *Server) Serve(l net.Listener) os.Error {
 	defer l.Close()
 	handler := srv.Handler
@@ -265,7 +269,7 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err o
 
 // Request returns the request data associated with the serverStream.
 func (st *serverStream) Request() (req *http.Request) {
-	// TODO
+	// TODO: Add more info
 	req = &http.Request{
 		Method:     st.requestHeaders.Get("method"),
 		RawURL:     st.requestHeaders.Get("url"),
@@ -310,6 +314,8 @@ func (st *serverStream) Write(p []byte) (n int, err os.Error) {
 	return
 }
 
+// A synReplyFrame defers header compression until the server writes the frame.
+// This is necessary to guarantee correctly ordered compression.
 type synReplyFrame struct {
 	stream *serverStream
 	header http.Header
@@ -359,6 +365,8 @@ func (st *serverStream) WriteHeader(code int) {
 	}
 }
 
+// Close sends a closing frame, thus preventing the server from sending more
+// data over the stream.  The client may still send data.
 func (st *serverStream) Close() (err os.Error) {
 	if st.closed {
 		return
