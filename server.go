@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"http"
 	"io"
-	"log"
 	"net"
 	"os"
 	"strconv"
@@ -129,10 +128,6 @@ func (sess *session) serve() {
 }
 
 func (sess *session) handleControl(frame ControlFrame) {
-	log.Printf("CONTROL <-\n")
-	log.Printf("  Type:  %v\n", frame.Type)
-	log.Printf("  Flags: %#04x\n", frame.Flags)
-
 	switch frame.Type {
 	case TypeSynStream:
 		if stream, err := newServerStream(sess, frame); err == nil {
@@ -143,21 +138,15 @@ func (sess *session) handleControl(frame ControlFrame) {
 					stream.finish()
 				}()
 			}
-		} else {
-			log.Println("Stream error:", err)
 		}
 	case TypeRstStream:
 		d := bytes.NewBuffer(frame.Data)
 		var streamId, statusCode uint32
 		readBinary(d, &streamId, &statusCode)
-		log.Println("  Reset")
-		log.Println("    ID:", streamId)
-		log.Println("    Code:", statusCode)
 	case TypePing:
 		d := bytes.NewBuffer(frame.Data)
 		var pingId uint32
 		readBinary(d, &pingId)
-		log.Println("  Ping")
 		sess.out <- ControlFrame{
 			Type: TypePing,
 			Data: []byte{
@@ -171,9 +160,6 @@ func (sess *session) handleControl(frame ControlFrame) {
 }
 
 func (sess *session) handleData(frame DataFrame) {
-	log.Printf("DATA <-\n")
-	log.Printf("  Flags: %#04x\n", frame.Flags)
-
 	st, found := sess.streams[frame.StreamID]
 	if !found {
 		// TODO: Error?
@@ -190,19 +176,7 @@ func (sess *session) handleData(frame DataFrame) {
 func (sess *session) sendFrames() {
 	for frame := range sess.out {
 		// TODO: Check for errors
-		switch f := frame.(type) {
-		case DataFrame:
-			log.Println("DATA ->")
-			log.Printf("  Flags: %#04x", f.Flags)
-		case ControlFrame:
-			log.Println("CONTROL ->")
-			log.Printf("  Type:  %v", f.Type)
-			log.Printf("  Flags: %#04x\n", f.Flags)
-		}
-		_, err := frame.WriteTo(sess.c)
-		if err != nil {
-			log.Println("Error", err)
-		}
+		frame.WriteTo(sess.c)
 	}
 }
 
@@ -255,15 +229,6 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err o
 		return
 	}
 	st.requestHeaders, err = sess.headerReader.Decode(data.Bytes())
-	if err == nil {
-		log.Println("HEADERS")
-		for name, values := range st.requestHeaders {
-			log.Printf("  %s:\n", name)
-			for _, v := range values {
-				log.Println("    " + v)
-			}
-		}
-	}
 	return
 }
 
@@ -355,14 +320,6 @@ func (st *serverStream) WriteHeader(code int) {
 	// TODO: Copy headers
 	st.session.out <- synReplyFrame{stream: st, header: st.responseHeaders}
 	st.wroteHeader = true
-	// Display response headers
-	log.Println("RESPONSE HEADERS")
-	for name, values := range st.responseHeaders {
-		log.Printf("  %s:\n", name)
-		for _, v := range values {
-			log.Println("    " + v)
-		}
-	}
 }
 
 // Close sends a closing frame, thus preventing the server from sending more
