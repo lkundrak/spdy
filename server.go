@@ -118,6 +118,10 @@ func (sess *session) serve() {
 	for {
 		select {
 		case f := <-sess.in:
+			if f == nil {
+				// EOF, signalling end of session
+				return
+			}
 			switch frame := f.(type) {
 			case ControlFrame:
 				sess.handleControl(frame)
