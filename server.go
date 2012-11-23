@@ -28,7 +28,7 @@ func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handl
 	config := &tls.Config{
 		Rand:         rand.Reader,
 		Time:         time.Now,
-		NextProtos:   []string{"http/1.1"},
+		NextProtos:   []string{"spdy/2", "http/1.1"},
 		Certificates: make([]tls.Certificate, 1),
 	}
 	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
