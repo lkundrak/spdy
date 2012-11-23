@@ -4,8 +4,9 @@ package spdy
 
 import (
 	"bytes"
-	"os"
+	"io"
 	"sync"
+	"syscall"
 )
 
 // An asyncPipe is similar to *io.Pipe, but writes never block: they are sent to a buffer, where a reader will block until it has some data in the buffer.
@@ -17,10 +18,10 @@ type asyncPipe struct {
 	data    bytes.Buffer // data remaining
 	rwait   sync.Cond    // waiting reader
 	rclosed bool         // if reader closed, break pipe
-	werr    os.Error     // if writer closed, error to give reads
+	werr    error        // if writer closed, error to give reads
 }
 
-func (p *asyncPipe) read(b []byte) (n int, err os.Error) {
+func (p *asyncPipe) read(b []byte) (n int, err error) {
 	// One reader at a time.
 	p.rl.Lock()
 	defer p.rl.Unlock()
@@ -29,7 +30,7 @@ func (p *asyncPipe) read(b []byte) (n int, err os.Error) {
 	defer p.l.Unlock()
 	for {
 		if p.rclosed {
-			return 0, os.EINVAL
+			return 0, syscall.EINVAL
 		}
 		if p.data.Len() > 0 {
 			break
@@ -42,7 +43,7 @@ func (p *asyncPipe) read(b []byte) (n int, err os.Error) {
 	return p.data.Read(b)
 }
 
-func (p *asyncPipe) write(b []byte) (n int, err os.Error) {
+func (p *asyncPipe) write(b []byte) (n int, err error) {
 	// One writer at a time.
 	p.wl.Lock()
 	defer p.wl.Unlock()
@@ -52,10 +53,10 @@ func (p *asyncPipe) write(b []byte) (n int, err os.Error) {
 	p.data.Write(b)
 	p.rwait.Signal()
 	if p.rclosed {
-		err = os.EPIPE
+		err = io.ErrClosedPipe
 	}
 	if p.werr != nil {
-		err = os.EINVAL
+		err = syscall.EINVAL
 	}
 	n = len(b)
 	return
@@ -68,9 +69,9 @@ func (p *asyncPipe) rclose() {
 	p.rwait.Signal()
 }
 
-func (p *asyncPipe) wclose(err os.Error) {
+func (p *asyncPipe) wclose(err error) {
 	if err == nil {
-		err = os.EOF
+		err = io.EOF
 	}
 	p.l.Lock()
 	defer p.l.Unlock()

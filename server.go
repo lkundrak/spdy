@@ -7,26 +7,27 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
-	"http"
+	"errors"
 	"io"
 	"net"
-	"os"
+	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
 
 // ListenAndServe creates a new Server that serves on the given address.  If
 // the handler is nil, then http.DefaultServeMux is used.
-func ListenAndServe(addr string, handler http.Handler) os.Error {
+func ListenAndServe(addr string, handler http.Handler) error {
 	srv := &Server{addr, handler}
 	return srv.ListenAndServe()
 }
 
 // ListenAndServeTLS acts like ListenAndServe except it uses TLS.
-func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handler) (err os.Error) {
+func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handler) (err error) {
 	config := &tls.Config{
 		Rand:         rand.Reader,
-		Time:         time.Seconds,
+		Time:         time.Now,
 		NextProtos:   []string{"http/1.1"},
 		Certificates: make([]tls.Certificate, 1),
 	}
@@ -51,7 +52,7 @@ type Server struct {
 
 // ListenAndServe services SPDY requests on the given address.
 // If the handler is nil, then http.DefaultServeMux is used.
-func (srv *Server) ListenAndServe() os.Error {
+func (srv *Server) ListenAndServe() error {
 	addr := srv.Addr
 	if addr == "" {
 		addr = ":http"
@@ -65,7 +66,7 @@ func (srv *Server) ListenAndServe() os.Error {
 
 // ListenAndServe services SPDY requests using the given listener.
 // If the handler is nil, then http.DefaultServeMux is used.
-func (srv *Server) Serve(l net.Listener) os.Error {
+func (srv *Server) Serve(l net.Listener) error {
 	defer l.Close()
 	handler := srv.Handler
 	if handler == nil {
@@ -96,7 +97,7 @@ type session struct {
 	headerWriter *HeaderWriter
 }
 
-func newSession(c net.Conn, h http.Handler) (s *session, err os.Error) {
+func newSession(c net.Conn, h http.Handler) (s *session, err error) {
 	s = &session{
 		c:            c,
 		handler:      h,
@@ -205,9 +206,9 @@ type serverStream struct {
 	dataPipe *asyncPipe
 }
 
-func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err os.Error) {
+func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err error) {
 	if frame.Type != TypeSynStream {
-		err = os.NewError("Server stream must be created from a SynStream frame")
+		err = errors.New("Server stream must be created from a SynStream frame")
 		return
 	}
 	st = &serverStream{
@@ -237,26 +238,25 @@ func (st *serverStream) Request() (req *http.Request) {
 	// TODO: Add more info
 	req = &http.Request{
 		Method:     st.requestHeaders.Get("method"),
-		RawURL:     st.requestHeaders.Get("url"),
 		Proto:      st.requestHeaders.Get("version"),
 		Header:     st.requestHeaders,
 		Body:       st,
 		RemoteAddr: st.session.c.RemoteAddr().String(),
 	}
-	req.URL, _ = http.ParseRequestURL(req.RawURL)
+	req.URL, _ = url.ParseRequestURI(st.requestHeaders.Get("url"))
 	return
 }
 
-func (st *serverStream) Read(p []byte) (n int, err os.Error) {
+func (st *serverStream) Read(p []byte) (n int, err error) {
 	return st.dataPipe.read(p)
 }
 
 // Header returns the current response headers.
 func (st *serverStream) Header() http.Header { return st.responseHeaders }
 
-func (st *serverStream) Write(p []byte) (n int, err os.Error) {
+func (st *serverStream) Write(p []byte) (n int, err error) {
 	if st.closed {
-		err = os.NewError("Write on closed serverStream")
+		err = errors.New("Write on closed serverStream")
 		return
 	}
 	if !st.wroteHeader {
@@ -294,12 +294,12 @@ func (frame synReplyFrame) GetFlags() FrameFlags {
 func (frame synReplyFrame) GetData() []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, frame.stream.id&0x7fffffff)
-	buf.Write([2]byte{}[:])
+	buf.Write([]byte{0, 0})
 	frame.stream.session.headerWriter.WriteHeader(buf, frame.stream.responseHeaders)
 	return buf.Bytes()
 }
 
-func (frame synReplyFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
+func (frame synReplyFrame) WriteTo(w io.Writer) (n int64, err error) {
 	cf := ControlFrame{Type: TypeSynReply, Data: frame.GetData()}
 	return cf.WriteTo(w)
 }
@@ -314,7 +314,7 @@ func (st *serverStream) WriteHeader(code int) {
 		st.responseHeaders.Set("Content-Type", "text/html; charset=utf-8")
 	}
 	if st.responseHeaders.Get("Date") == "" {
-		st.responseHeaders.Set("Date", time.UTC().Format(http.TimeFormat))
+		st.responseHeaders.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 	}
 	// Write the frame
 	// TODO: Copy headers
@@ -324,7 +324,7 @@ func (st *serverStream) WriteHeader(code int) {
 
 // Close sends a closing frame, thus preventing the server from sending more
 // data over the stream.  The client may still send data.
-func (st *serverStream) Close() (err os.Error) {
+func (st *serverStream) Close() (err error) {
 	if st.closed {
 		return
 	}
@@ -337,7 +337,7 @@ func (st *serverStream) Close() (err os.Error) {
 	return nil
 }
 
-func (st *serverStream) finish() (err os.Error) {
+func (st *serverStream) finish() (err error) {
 	if !st.wroteHeader {
 		st.WriteHeader(http.StatusOK)
 	}

@@ -7,9 +7,8 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"fmt"
-	"http"
 	"io"
-	"os"
+	"net/http"
 	"strings"
 	"sync"
 )
@@ -79,7 +78,7 @@ type ControlFrame struct {
 func (f ControlFrame) GetFlags() FrameFlags { return f.Flags }
 func (f ControlFrame) GetData() []byte      { return f.Data }
 
-func (f ControlFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
+func (f ControlFrame) WriteTo(w io.Writer) (n int64, err error) {
 	nn, err := writeFrame(w, []interface{}{uint16(0x8002), f.Type, f.Flags}, f.Data)
 	return int64(nn), err
 }
@@ -97,7 +96,7 @@ type DataFrame struct {
 func (f DataFrame) GetFlags() FrameFlags { return f.Flags }
 func (f DataFrame) GetData() []byte      { return f.Data }
 
-func (f DataFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
+func (f DataFrame) WriteTo(w io.Writer) (n int64, err error) {
 	nn, err := writeFrame(w, []interface{}{f.StreamID & 0x7fffffff, f.Flags}, f.Data)
 	return int64(nn), err
 }
@@ -105,9 +104,9 @@ func (f DataFrame) WriteTo(w io.Writer) (n int64, err os.Error) {
 const frameHeadSize = 5 // in bytes, excluding length field
 
 // ReadFrame reads an entire frame into memory.
-func ReadFrame(r io.Reader) (f Frame, err os.Error) {
+func ReadFrame(r io.Reader) (f Frame, err error) {
 	headBuffer := new(bytes.Buffer)
-	_, err = io.Copyn(headBuffer, r, frameHeadSize)
+	_, err = io.CopyN(headBuffer, r, frameHeadSize)
 	if err != nil {
 		return
 	}
@@ -135,7 +134,7 @@ func ReadFrame(r io.Reader) (f Frame, err os.Error) {
 	return
 }
 
-func readBinary(r io.Reader, args ...interface{}) (err os.Error) {
+func readBinary(r io.Reader, args ...interface{}) (err error) {
 	for _, a := range args {
 		err = binary.Read(r, binary.BigEndian, a)
 		if err != nil {
@@ -145,7 +144,7 @@ func readBinary(r io.Reader, args ...interface{}) (err os.Error) {
 	return
 }
 
-func readData(r io.Reader) (data []byte, err os.Error) {
+func readData(r io.Reader) (data []byte, err error) {
 	lengthField := make([]byte, 3)
 	_, err = io.ReadFull(r, lengthField)
 	if err != nil {
@@ -165,7 +164,7 @@ func readData(r io.Reader) (data []byte, err os.Error) {
 	return
 }
 
-func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err os.Error) {
+func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err error) {
 	var nn int
 	// Header (40 bits)
 	err = writeBinary(w, head...)
@@ -192,7 +191,7 @@ func writeFrame(w io.Writer, head []interface{}, data []byte) (n int, err os.Err
 	return
 }
 
-func writeBinary(r io.Writer, args ...interface{}) (err os.Error) {
+func writeBinary(r io.Writer, args ...interface{}) (err error) {
 	for _, a := range args {
 		err = binary.Write(r, binary.BigEndian, a)
 		if err != nil {
@@ -210,14 +209,14 @@ type hrSource struct {
 	c *sync.Cond
 }
 
-func (src *hrSource) Read(p []byte) (n int, err os.Error) {
+func (src *hrSource) Read(p []byte) (n int, err error) {
 	src.m.RLock()
 	for src.r == nil {
 		src.c.Wait()
 	}
 	n, err = src.r.Read(p)
 	src.m.RUnlock()
-	if err == os.EOF {
+	if err == io.EOF {
 		src.change(nil)
 		err = nil
 	}
@@ -245,20 +244,20 @@ func NewHeaderReader() (hr *HeaderReader) {
 }
 
 // ReadHeader reads a set of headers from a reader.
-func (hr *HeaderReader) ReadHeader(r io.Reader) (h http.Header, err os.Error) {
+func (hr *HeaderReader) ReadHeader(r io.Reader) (h http.Header, err error) {
 	hr.source.change(r)
 	h, err = hr.read()
 	return
 }
 
 // Decode reads a set of headers from a block of bytes.
-func (hr *HeaderReader) Decode(data []byte) (h http.Header, err os.Error) {
+func (hr *HeaderReader) Decode(data []byte) (h http.Header, err error) {
 	hr.source.change(bytes.NewBuffer(data))
 	h, err = hr.read()
 	return
 }
 
-func (hr *HeaderReader) read() (h http.Header, err os.Error) {
+func (hr *HeaderReader) read() (h http.Header, err error) {
 	var count uint16
 	if hr.decompressor == nil {
 		hr.decompressor, _ = zlib.NewReaderDict(&hr.source, []byte(headerDictionary))
@@ -281,7 +280,7 @@ func (hr *HeaderReader) read() (h http.Header, err os.Error) {
 		if err != nil {
 			return
 		}
-		valueList := strings.Split(string(value), "\x00", -1)
+		valueList := strings.Split(string(value), "\x00")
 		for _, v := range valueList {
 			h.Add(name, v)
 		}
@@ -289,7 +288,7 @@ func (hr *HeaderReader) read() (h http.Header, err os.Error) {
 	return
 }
 
-func readHeaderString(r io.Reader) (s string, err os.Error) {
+func readHeaderString(r io.Reader) (s string, err error) {
 	var length uint16
 	err = binary.Read(r, binary.BigEndian, &length)
 	if err != nil {
@@ -312,12 +311,12 @@ type HeaderWriter struct {
 // NewHeaderWriter creates a HeaderWriter ready to compress headers.
 func NewHeaderWriter(level int) (hw *HeaderWriter) {
 	hw = &HeaderWriter{buffer: new(bytes.Buffer)}
-	hw.compressor, _ = zlib.NewWriterDict(hw.buffer, level, []byte(headerDictionary))
+	hw.compressor, _ = zlib.NewWriterLevelDict(hw.buffer, level, []byte(headerDictionary))
 	return
 }
 
 // WriteHeader writes a header block directly to an output.
-func (hw *HeaderWriter) WriteHeader(w io.Writer, h http.Header) (err os.Error) {
+func (hw *HeaderWriter) WriteHeader(w io.Writer, h http.Header) (err error) {
 	hw.write(h)
 	_, err = io.Copy(w, hw.buffer)
 	hw.buffer.Reset()
