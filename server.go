@@ -248,6 +248,18 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err e
 		return
 	}
 	st.requestHeaders, err = sess.headerReader.Decode(data.Bytes())
+	if err != nil {
+		return
+	}
+
+	if st.requestHeaders.Get("method") == "" {
+		err = errors.New("Missing method header")
+	} else if st.requestHeaders.Get("version") == "" {
+		err = errors.New("Missing version header")
+	} else if st.requestHeaders.Get("url") == "" {
+		err = errors.New("Missing url header")
+	}
+
 	return
 }
 
