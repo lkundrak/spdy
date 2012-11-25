@@ -90,7 +90,7 @@ func (srv *Server) Serve(l net.Listener) error {
 type session struct {
 	c       net.Conn
 	handler http.Handler
-	in, out chan Frame
+	out	chan Frame
 	streams map[uint32]*serverStream // all access is done synchronously
 
 	headerReader *HeaderReader
@@ -103,7 +103,6 @@ func newSession(c net.Conn, h http.Handler) (s *session, err error) {
 		handler:      h,
 		headerReader: NewHeaderReader(),
 		headerWriter: NewHeaderWriter(-1),
-		in:           make(chan Frame),
 		out:          make(chan Frame),
 		streams:      make(map[uint32]*serverStream),
 	}
@@ -112,23 +111,18 @@ func newSession(c net.Conn, h http.Handler) (s *session, err error) {
 
 func (sess *session) serve() {
 	defer sess.c.Close()
-	go sess.sendFrames()
 	go sess.receiveFrames()
 
-	for {
-		select {
-		case f := <-sess.in:
-			if f == nil {
-				// EOF, signalling end of session
-				return
-			}
-			switch frame := f.(type) {
-			case ControlFrame:
-				sess.handleControl(frame)
-			case DataFrame:
-				sess.handleData(frame)
-			}
+	for frame := range sess.out {
+
+		if (frame == nil) {
+			// EOF, signalling end of session
+			// initiated by us (on errors, etc.)
+			return
 		}
+
+		// TODO: Check for errors
+		frame.WriteTo(sess.c)
 	}
 }
 
@@ -178,21 +172,23 @@ func (sess *session) handleData(frame DataFrame) {
 	}
 }
 
-func (sess *session) sendFrames() {
-	for frame := range sess.out {
-		// TODO: Check for errors
-		frame.WriteTo(sess.c)
-	}
-}
-
 func (sess *session) receiveFrames() {
-	defer close(sess.in)
 	for {
-		frame, err := ReadFrame(sess.c)
+		f, err := ReadFrame(sess.c)
 		if err != nil {
 			return
 		}
-		sess.in <- frame
+
+		if (f == nil) {
+			// EOF, signalling end of session
+			return
+		}
+		switch frame := f.(type) {
+		case ControlFrame:
+			sess.handleControl(frame)
+		case DataFrame:
+			sess.handleData(frame)
+		}
 	}
 }
 
