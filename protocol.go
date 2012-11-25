@@ -158,6 +158,10 @@ func readData(r io.Reader) (data []byte, err error) {
 	if length > 0 {
 		data = make([]byte, int(length))
 		_, err = io.ReadFull(r, data)
+		if err != nil {
+			data = nil
+			return
+		}
 	} else {
 		data = []byte{}
 	}
