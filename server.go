@@ -153,6 +153,8 @@ func (sess *session) handleControl(frame ControlFrame) {
 					stream.finish()
 				}()
 			}
+		} else {
+			sess.fail()
 		}
 	case TypeRstStream:
 		d := bytes.NewBuffer(frame.Data)
