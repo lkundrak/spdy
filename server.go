@@ -149,6 +149,11 @@ func (sess *session) handleControl(frame ControlFrame) {
 				sess.streams[stream.id] = stream
 				sess.last_good = stream.id
 				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							stream.session.fail()
+						}
+					}()
 					sess.handler.ServeHTTP(stream, stream.Request())
 					stream.finish()
 				}()
