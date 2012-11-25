@@ -88,10 +88,11 @@ func (srv *Server) Serve(l net.Listener) error {
 
 // A session manages a single TCP connection to a client.
 type session struct {
-	c       net.Conn
-	handler http.Handler
-	out	chan Frame
-	streams map[uint32]*serverStream // all access is done synchronously
+	c         net.Conn
+	handler   http.Handler
+	out       chan Frame
+	streams   map[uint32]*serverStream // all access is done synchronously
+	last_good uint32
 
 	headerReader *HeaderReader
 	headerWriter *HeaderWriter
@@ -105,6 +106,7 @@ func newSession(c net.Conn, h http.Handler) (s *session, err error) {
 		headerWriter: NewHeaderWriter(-1),
 		out:          make(chan Frame),
 		streams:      make(map[uint32]*serverStream),
+		last_good:    0,
 	}
 	return
 }
@@ -115,7 +117,7 @@ func (sess *session) serve() {
 
 	for frame := range sess.out {
 
-		if (frame == nil) {
+		if frame == nil {
 			// EOF, signalling end of session
 			// initiated by us (on errors, etc.)
 			return
@@ -126,12 +128,26 @@ func (sess *session) serve() {
 	}
 }
 
+func (sess *session) fail() {
+	sess.out <- ControlFrame{
+		Type: TypeGoaway,
+		Data: []byte{
+			byte(sess.last_good & 0x7f000000 >> 24),
+			byte(sess.last_good & 0x00ff0000 >> 16),
+			byte(sess.last_good & 0x0000ff00 >> 8),
+			byte(sess.last_good & 0x000000ff >> 0),
+		},
+	}
+	sess.out <- nil
+}
+
 func (sess *session) handleControl(frame ControlFrame) {
 	switch frame.Type {
 	case TypeSynStream:
 		if stream, err := newServerStream(sess, frame); err == nil {
 			if _, exists := sess.streams[stream.id]; !exists {
 				sess.streams[stream.id] = stream
+				sess.last_good = stream.id
 				go func() {
 					sess.handler.ServeHTTP(stream, stream.Request())
 					stream.finish()
@@ -179,7 +195,7 @@ func (sess *session) receiveFrames() {
 			return
 		}
 
-		if (f == nil) {
+		if f == nil {
 			// EOF, signalling end of session
 			return
 		}
