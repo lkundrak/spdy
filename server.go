@@ -16,6 +16,13 @@ import (
 	"time"
 )
 
+const (
+	statusHeader  = ":status"
+	methodHeader  = ":method"
+	versionHeader = ":version"
+	pathHeader    = ":path"
+)
+
 // ListenAndServe creates a new Server that serves on the given address.  If
 // the handler is nil, then http.DefaultServeMux is used.
 func ListenAndServe(addr string, handler http.Handler) error {
@@ -28,7 +35,7 @@ func ListenAndServeTLS(addr string, certFile, keyFile string, handler http.Handl
 	config := &tls.Config{
 		Rand:         rand.Reader,
 		Time:         time.Now,
-		NextProtos:   []string{"spdy/2", "http/1.1"},
+		NextProtos:   []string{"spdy/3", "http/1.1"},
 		Certificates: make([]tls.Certificate, 1),
 	}
 	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
@@ -136,6 +143,7 @@ func (sess *session) fail() {
 			byte(sess.last_good & 0x00ff0000 >> 16),
 			byte(sess.last_good & 0x0000ff00 >> 8),
 			byte(sess.last_good & 0x000000ff >> 0),
+			byte(0), byte(0), byte(0), byte(0),
 		},
 	}
 	sess.out <- nil
@@ -265,12 +273,12 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err e
 		return
 	}
 
-	if st.requestHeaders.Get("method") == "" {
+	if st.requestHeaders.Get(methodHeader) == "" {
 		err = errors.New("Missing method header")
-	} else if st.requestHeaders.Get("version") == "" {
+	} else if st.requestHeaders.Get(versionHeader) == "" {
 		err = errors.New("Missing version header")
-	} else if st.requestHeaders.Get("url") == "" {
-		err = errors.New("Missing url header")
+	} else if st.requestHeaders.Get(pathHeader) == "" {
+		err = errors.New("Missing path header")
 	}
 
 	return
@@ -280,13 +288,13 @@ func newServerStream(sess *session, frame ControlFrame) (st *serverStream, err e
 func (st *serverStream) Request() (req *http.Request) {
 	// TODO: Add more info
 	req = &http.Request{
-		Method:     st.requestHeaders.Get("method"),
-		Proto:      st.requestHeaders.Get("version"),
+		Method:     st.requestHeaders.Get(methodHeader),
+		Proto:      st.requestHeaders.Get(versionHeader),
 		Header:     st.requestHeaders,
 		Body:       st,
 		RemoteAddr: st.session.c.RemoteAddr().String(),
 	}
-	req.URL, _ = url.ParseRequestURI(st.requestHeaders.Get("url"))
+	req.URL, _ = url.ParseRequestURI(st.requestHeaders.Get(pathHeader))
 	return
 }
 
@@ -337,7 +345,6 @@ func (frame synReplyFrame) GetFlags() FrameFlags {
 func (frame synReplyFrame) GetData() []byte {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.BigEndian, frame.stream.id&0x7fffffff)
-	buf.Write([]byte{0, 0})
 	frame.stream.session.headerWriter.WriteHeader(buf, frame.stream.responseHeaders)
 	return buf.Bytes()
 }
@@ -351,8 +358,8 @@ func (st *serverStream) WriteHeader(code int) {
 	if st.wroteHeader {
 		return
 	}
-	st.responseHeaders.Set("status", strconv.Itoa(code)+" "+http.StatusText(code))
-	st.responseHeaders.Set("version", "HTTP/1.1")
+	st.responseHeaders.Set(statusHeader, strconv.Itoa(code)+" "+http.StatusText(code))
+	st.responseHeaders.Set(versionHeader, "HTTP/1.1")
 	if st.responseHeaders.Get("Content-Type") == "" {
 		st.responseHeaders.Set("Content-Type", "text/html; charset=utf-8")
 	}
