@@ -199,6 +199,11 @@ func (sess *session) handleData(frame DataFrame) {
 }
 
 func (sess *session) receiveFrames() {
+	defer func() {
+		if r := recover(); r != nil {
+			sess.fail()
+		}
+	}()
 	for {
 		f, err := ReadFrame(sess.c)
 		if err != nil {
