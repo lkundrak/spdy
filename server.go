@@ -144,20 +144,23 @@ func (sess *session) fail() {
 func (sess *session) handleControl(frame ControlFrame) {
 	switch frame.Type {
 	case TypeSynStream:
-		if stream, err := newServerStream(sess, frame); err == nil {
-			if _, exists := sess.streams[stream.id]; !exists {
-				sess.streams[stream.id] = stream
-				sess.last_good = stream.id
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							stream.session.fail()
-						}
-					}()
-					sess.handler.ServeHTTP(stream, stream.Request())
-					stream.finish()
+		stream, err := newServerStream(sess, frame)
+		if err == nil && stream.id%2 == 0 {
+			err = errors.New("Invalid stream id")
+		}
+
+		if err == nil {
+			sess.last_good = stream.id
+			sess.streams[stream.id] = stream
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						stream.session.fail()
+					}
 				}()
-			}
+				sess.handler.ServeHTTP(stream, stream.Request())
+				stream.finish()
+			}()
 		} else {
 			sess.fail()
 		}
